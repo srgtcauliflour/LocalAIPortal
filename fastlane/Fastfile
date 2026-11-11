@@ -1,0 +1,121 @@
+default_platform(:ios)
+
+MEMORY_ENTITLEMENT = "com.apple.developer.kernel.increased-memory-limit"
+PROJECT = "LocalAIPortal.xcodeproj"
+ENTITLEMENTS = "App/LocalAIPortal.entitlements"
+
+platform :ios do
+  desc "Build LocalAIPortal and send it to TestFlight"
+  lane :beta do
+    bundle_id = ENV.fetch("BUNDLE_ID")
+    key_id = ENV.fetch("APPLE_KEY_ID").strip
+    issuer_id = ENV.fetch("APPLE_ISSUER_ID").strip
+    # The key may be stored with real line breaks or with literal "\n".
+    key = ENV.fetch("APPLE_API_PRIVATE_KEY").gsub("\\n", "\n").strip + "\n"
+
+    api_key = app_store_connect_api_key(
+      key_id: key_id,
+      issuer_id: issuer_id,
+      key_content: key,
+      is_key_content_base64: false
+    )
+    Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.create(
+      key_id: key_id, issuer_id: issuer_id, key: key
+    )
+
+    # 1. Make sure the bundle ID exists, with the larger memory allowance.
+    identifier = Spaceship::ConnectAPI::BundleId.find(bundle_id)
+    if identifier.nil?
+      UI.message("Registering bundle ID #{bundle_id}")
+      identifier = Spaceship::ConnectAPI::BundleId.create(
+        name: "LocalAIPortal", platform: "IOS", identifier: bundle_id
+      )
+    end
+    begin
+      enabled = identifier.get_capabilities.map(&:capability_type)
+      unless enabled.include?("INCREASED_MEMORY_LIMIT")
+        identifier.create_capability("INCREASED_MEMORY_LIMIT")
+        UI.success("Enabled Increased Memory Limit for #{bundle_id}")
+      end
+    rescue => error
+      UI.important("Could not enable Increased Memory Limit automatically: #{error.message}")
+      UI.important("Tick it by hand under Identifiers on developer.apple.com for the best results.")
+    end
+
+    # 2. TestFlight needs an app record, which Apple only lets a person create.
+    if Spaceship::ConnectAPI::App.find(bundle_id).nil?
+      UI.user_error!(
+        "Bundle ID #{bundle_id} is registered, but there is no app for it yet. " \
+        "In App Store Connect choose Apps > + > New App, pick iOS and bundle ID " \
+        "#{bundle_id}, then run this workflow again."
+      )
+    end
+
+    # 3. Sign with a certificate that exists only for this run. Nothing is
+    #    stored anywhere; the certificate is revoked when the run ends, which
+    #    does not affect builds already uploaded to TestFlight.
+    setup_ci
+    keychain = File.expand_path("~/Library/Keychains/fastlane_tmp_keychain-db")
+    certificate_id = nil
+    begin
+      cert(
+        api_key: api_key,
+        generate_apple_certs: true,
+        keychain_path: keychain,
+        keychain_password: ""
+      )
+      certificate_id = lane_context[SharedValues::CERT_CERTIFICATE_ID]
+
+      sigh(
+        api_key: api_key,
+        app_identifier: bundle_id,
+        cert_id: certificate_id,
+        provisioning_name: "LocalAIPortal CI",
+        force: true
+      )
+      profile_name = lane_context[SharedValues::SIGH_NAME] || "LocalAIPortal CI"
+      profile = FastlaneCore::ProvisioningProfile.parse(lane_context[SharedValues::SIGH_PROFILE_PATH])
+      team_id = Array(profile["TeamIdentifier"]).first
+
+      # If the profile does not carry the memory entitlement, build without it
+      # rather than failing. The app still runs, with less room for big models.
+      unless (profile["Entitlements"] || {}).key?(MEMORY_ENTITLEMENT)
+        UI.important("Profile lacks #{MEMORY_ENTITLEMENT}; building without it.")
+        sh("/usr/libexec/PlistBuddy -c 'Delete :#{MEMORY_ENTITLEMENT}' ../#{ENTITLEMENTS} || true")
+      end
+
+      update_code_signing_settings(
+        use_automatic_signing: false,
+        path: PROJECT,
+        targets: ["LocalAIPortal"],
+        team_id: team_id,
+        bundle_identifier: bundle_id,
+        code_sign_identity: "Apple Distribution",
+        profile_name: profile_name
+      )
+
+      build_app(
+        project: PROJECT,
+        scheme: "LocalAIPortal",
+        export_method: "app-store",
+        export_options: { provisioningProfiles: { bundle_id => profile_name } },
+        output_directory: "build",
+        xcargs: "-skipMacroValidation -skipPackagePluginValidation CURRENT_PROJECT_VERSION=#{ENV.fetch('BUILD_NUMBER', '1')}"
+      )
+
+      upload_to_testflight(
+        api_key: api_key,
+        skip_waiting_for_build_processing: true
+      )
+    ensure
+      if certificate_id
+        begin
+          Spaceship::ConnectAPI::Certificate.get(certificate_id: certificate_id).delete!
+          UI.message("Revoked the temporary signing certificate.")
+        rescue => error
+          UI.important("Could not revoke certificate #{certificate_id}: #{error.message}")
+        end
+      end
+    end
+  end
+end
