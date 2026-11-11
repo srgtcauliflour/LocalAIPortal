@@ -1,0 +1,81 @@
+name: Build IPA for sideloading
+
+# Builds an unsigned Release IPA and publishes it as a GitHub release, for
+# installing with a sideloading tool that signs the app itself.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-ipa
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    runs-on: xcode-27
+    timeout-minutes: 90
+    env:
+      BUNDLE_ID: com.srgtcauliflour.localaiportal
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install the Metal toolchain (needed by MLX)
+        run: xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Generate the Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project LocalAIPortal.xcodeproj \
+            -scheme LocalAIPortal \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            -skipMacroValidation -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            build 2>&1 | tee xcodebuild.log | grep -E "error:|BUILD" | cut -c1-300
+
+      - name: Package the IPA
+        run: |
+          set -euo pipefail
+          APP=build/DerivedData/Build/Products/Release-iphoneos/LocalAIPortal.app
+          test -d "$APP"
+          ls "$APP" | head -40
+          rm -rf ipa && mkdir -p ipa/Payload
+          cp -R "$APP" ipa/Payload/
+          (cd ipa && /usr/bin/zip -qry -X "$GITHUB_WORKSPACE/LocalAIPortal.ipa" Payload)
+          ls -lh LocalAIPortal.ipa
+          shasum -a 256 LocalAIPortal.ipa
+
+      - name: Publish as a release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "build-${{ github.run_number }}" LocalAIPortal.ipa \
+            --title "Sideload build ${{ github.run_number }}" \
+            --notes "Unsigned IPA built from ${{ github.sha }}. Sign it with your sideloading tool to install."
+
+      - name: Keep the IPA as an artifact too
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalAIPortal-ipa
+          path: LocalAIPortal.ipa
+
+      - name: Summarise errors
+        if: failure()
+        run: |
+          grep -E "error:|fatal error" xcodebuild.log | sort -u | head -80 || true
+          tail -40 xcodebuild.log || true
