@@ -1,0 +1,67 @@
+name: Build check
+
+# Compiles the app without signing, so compile errors show up without
+# needing any Apple account access.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "App/**"
+      - "Packages/**"
+      - "project.yml"
+      - ".github/workflows/build-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-check
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    runs-on: xcode-27
+    timeout-minutes: 90
+    env:
+      BUNDLE_ID: com.srgtcauliflour.localaiportal
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install the Metal toolchain (needed by MLX)
+        run: xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Generate the Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Compile
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project LocalAIPortal.xcodeproj \
+            -scheme LocalAIPortal \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            -skipMacroValidation -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee xcodebuild.log | grep -E "error:|warning: unre|BUILD|Compiling|Resolved|Fetching" | cut -c1-300
+
+      - name: Summarise errors
+        if: failure()
+        run: |
+          {
+            echo "### Build errors"
+            echo '```'
+            grep -E "error:|fatal error" xcodebuild.log | sort -u | head -80 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -E "error:|fatal error" xcodebuild.log | sort -u | head -80 || true
+          tail -40 xcodebuild.log
