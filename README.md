@@ -23,7 +23,7 @@ The app is compiled on GitHub's Mac servers and delivered to the phone through T
 
 1. In that repository open **Actions** → **LocalAIPortal TestFlight** → **Run workflow**. The bundle ID defaults to `com.srgtcauliflour.localaiportal`.
 2. The first run registers the bundle ID with Apple and then stops, asking for an app record. Create it at appstoreconnect.apple.com → **Apps** → **+** → **New App**: platform iOS, any free name, that bundle ID, any SKU.
-3. Run the workflow again. A full build takes roughly 20 to 40 minutes. If it fails, the run summary lists the compile errors and the full log is attached as `build-log`.
+3. Run the workflow again. A full build takes roughly 20 to 40 minutes. If it fails, the run summary lists the compile errors and the full log is attached as `localaiportal-build-log`.
 4. In App Store Connect open the app → **TestFlight** → **Internal Testing**, create a group and add yourself. Install Apple's **TestFlight** app on the iPhone; the build appears a few minutes after the workflow finishes.
 
 Each run signs with a certificate created for that run and revoked when it ends, so no signing material is stored in either repository. The API key needs the Admin or App Manager role for this. If the account already holds the maximum number of distribution certificates, revoke an unused one first.
