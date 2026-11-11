@@ -11,7 +11,7 @@ settings:
 packages:
   MLXSwift:
     url: https://github.com/ml-explore/mlx-swift
-    minorVersion: 0.33.0
+    minorVersion: 0.32.3
   MLXSwiftLM:
     url: https://github.com/ml-explore/mlx-swift-lm
     minorVersion: 3.32.3
